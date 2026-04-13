@@ -22,7 +22,7 @@ export const numberWords: Record<number, string[]> = {
   55: ['fifty-five', 'fifty five', '55']
 };
 
-export type Difficulty = 'easy' | 'medium' | 'hard';
+export type Difficulty = 'kids' | 'easy' | 'medium' | 'hard';
 
 export interface TimeState {
   hour: number;
@@ -30,12 +30,35 @@ export interface TimeState {
   isAM: boolean;
 }
 
+// Levenshtein distance for typo tolerance
+export function levenshtein(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const matrix = [];
+  for (let i = 0; i <= b.length; i++) { matrix[i] = [i]; }
+  for (let j = 0; j <= a.length; j++) { matrix[0][j] = j; }
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1, // substitution
+          Math.min(matrix[i][j - 1] + 1, // insertion
+                   matrix[i - 1][j] + 1) // deletion
+        );
+      }
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
 export function generateRandomTime(difficulty: Difficulty): TimeState {
   const hour = Math.floor(Math.random() * 12) + 1;
   const isAM = Math.random() > 0.5;
   
   let minuteOptions: number[];
-  if (difficulty === 'easy') {
+  if (difficulty === 'easy' || difficulty === 'kids') {
     minuteOptions = [0, 15, 30, 45];
   } else {
     minuteOptions = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
@@ -46,12 +69,60 @@ export function generateRandomTime(difficulty: Difficulty): TimeState {
   return { hour, minute, isAM };
 }
 
+export function getPrimaryAnswer(time: TimeState, difficulty: Difficulty): string {
+  const { hour, minute, isAM } = time;
+  const nextHour = hour === 12 ? 1 : hour + 1;
+  const hWord = numberWords[hour][0];
+  const nextHWord = numberWords[nextHour][0];
+  
+  if (difficulty === 'hard') {
+    if (hour === 12 && minute === 0) return isAM ? 'midnight' : 'noon';
+  }
+
+  let base = '';
+  if (minute === 0) {
+    base = `${hWord} o'clock`;
+  } else if (minute === 15) {
+    base = `quarter past ${hWord}`;
+  } else if (minute === 30) {
+    base = `half past ${hWord}`;
+  } else if (minute === 45) {
+    base = `quarter to ${nextHWord}`;
+  } else if (minute < 30) {
+    base = `${numberWords[minute][0]} past ${hWord}`;
+  } else {
+    base = `${numberWords[60 - minute][0]} to ${nextHWord}`;
+  }
+
+  if (difficulty === 'hard') {
+    if (isAM) {
+      if (hour === 12) return base.replace('twelve', 'midnight');
+      return `${base} in the morning`;
+    } else {
+      if (hour === 12) return `${base} in the afternoon`;
+      if (hour < 6) return `${base} in the afternoon`;
+      if (hour >= 6 && hour < 9) return `${base} in the evening`;
+      return `${base} at night`;
+    }
+  }
+  
+  return base;
+}
+
 export function getValidAnswers(time: TimeState, difficulty: Difficulty): string[] {
   const { hour, minute, isAM } = time;
   const nextHour = hour === 12 ? 1 : hour + 1;
 
   const hWords = numberWords[hour];
   const nextHWords = numberWords[nextHour];
+
+  // Strict mode for kids and easy
+  if (difficulty === 'easy' || difficulty === 'kids') {
+    if (minute === 0) return [`${hWords[0]} o'clock`, `${hWords[0]} oclock`, hWords[0]];
+    if (minute === 15) return [`quarter past ${hWords[0]}`, `a quarter past ${hWords[0]}`];
+    if (minute === 30) return [`half past ${hWords[0]}`, `a half past ${hWords[0]}`];
+    if (minute === 45) return [`quarter to ${nextHWords[0]}`, `a quarter to ${nextHWords[0]}`];
+  }
 
   let baseAnswers: string[] = [];
 
@@ -97,7 +168,6 @@ export function getValidAnswers(time: TimeState, difficulty: Difficulty): string
   hWords.forEach(h => {
     baseAnswers.push(`${h}:${minStr}`);
     baseAnswers.push(`${h} ${minStr}`);
-    // e.g. "three fifteen"
     if (minute !== 0) {
       numberWords[minute].forEach(m => {
         baseAnswers.push(`${h} ${m}`);
@@ -116,24 +186,31 @@ export function getValidAnswers(time: TimeState, difficulty: Difficulty): string
       periodAnswers.push(`${a} p.m`);
       
       if (isAM) {
-        periodAnswers.push(`${a} in the morning`);
         if (hour === 12) {
+          periodAnswers.push(a.replace('twelve', 'midnight'));
           periodAnswers.push(`${a} at night`);
-          periodAnswers.push(`${a} midnight`);
+        } else {
+          periodAnswers.push(`${a} in the morning`);
         }
       } else {
-        if (hour === 12 || hour < 6) {
+        if (hour === 12) {
+          periodAnswers.push(`${a} in the afternoon`);
+        } else if (hour < 6) {
           periodAnswers.push(`${a} in the afternoon`);
         } else if (hour >= 6 && hour < 9) {
           periodAnswers.push(`${a} in the evening`);
         } else {
           periodAnswers.push(`${a} at night`);
         }
-        if (hour === 12) {
-          periodAnswers.push(`${a} noon`);
-        }
       }
     });
+    
+    // Add exact noon/midnight
+    if (hour === 12 && minute === 0) {
+      periodAnswers.push(isAM ? 'midnight' : 'noon');
+      periodAnswers.push(isAM ? '12 midnight' : '12 noon');
+    }
+    
     return [...baseAnswers, ...periodAnswers];
   }
 
@@ -142,40 +219,32 @@ export function getValidAnswers(time: TimeState, difficulty: Difficulty): string
 
 export function checkAnswer(userInput: string, validAnswers: string[]): boolean {
   const normalizedInput = userInput.toLowerCase().replace(/\s+/g, ' ').trim();
-  return validAnswers.some(ans => ans.toLowerCase() === normalizedInput);
+  
+  return validAnswers.some(ans => {
+    const normalizedAns = ans.toLowerCase();
+    if (normalizedAns === normalizedInput) return true;
+    
+    // Typo tolerance: Allow 1 typo for words > 5 chars, 2 typos for > 12 chars
+    if (normalizedAns.length > 5 && !normalizedAns.includes(':')) {
+      const maxTypos = normalizedAns.length > 12 ? 2 : 1;
+      if (levenshtein(normalizedAns, normalizedInput) <= maxTypos) {
+        return true;
+      }
+    }
+    return false;
+  });
 }
 
-export function getPrimaryAnswer(time: TimeState, difficulty: Difficulty): string {
-  const { hour, minute, isAM } = time;
-  const nextHour = hour === 12 ? 1 : hour + 1;
-  const hWord = numberWords[hour][0];
-  const nextHWord = numberWords[nextHour][0];
+export function generateMultipleChoice(time: TimeState, difficulty: Difficulty): string[] {
+  const correct = getPrimaryAnswer(time, difficulty);
+  const options = new Set<string>();
+  options.add(correct);
   
-  let base = '';
-  if (minute === 0) {
-    base = `${hWord} o'clock`;
-  } else if (minute === 15) {
-    base = `quarter past ${hWord}`;
-  } else if (minute === 30) {
-    base = `half past ${hWord}`;
-  } else if (minute === 45) {
-    base = `quarter to ${nextHWord}`;
-  } else if (minute < 30) {
-    base = `${numberWords[minute][0]} past ${hWord}`;
-  } else {
-    base = `${numberWords[60 - minute][0]} to ${nextHWord}`;
-  }
-
-  if (difficulty === 'hard') {
-    if (isAM) {
-      if (hour === 12) return `${base} at night`;
-      return `${base} in the morning`;
-    } else {
-      if (hour === 12 || hour < 6) return `${base} in the afternoon`;
-      if (hour >= 6 && hour < 9) return `${base} in the evening`;
-      return `${base} at night`;
-    }
+  // Generate 3 wrong but plausible options
+  while(options.size < 4) {
+    const randomTime = generateRandomTime(difficulty);
+    options.add(getPrimaryAnswer(randomTime, difficulty));
   }
   
-  return base;
+  return Array.from(options).sort(() => Math.random() - 0.5);
 }
